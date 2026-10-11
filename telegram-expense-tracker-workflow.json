@@ -1,0 +1,527 @@
+{
+  "name": "Telegram Expense Tracker (Monthly Sheets + Categories)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "f6a690fe-042c-489f-8c27-96abbedb9421",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        -800,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.message.text }}",
+        "hasOutputParser": false,
+        "options": {
+          "systemMessage": "=Today's date: {{ $now.format('yyyy-MM-dd') }}\n\nExtract all expenses from the message into a JSON array:\n[\n  {\n    \"amount\": <number>,\n    \"date\": \"YYYY-MM-DD\",\n    \"description\": \"<short description, 1-4 words>\",\n    \"category\": \"<one of: Food & Drinks, Transport, Shopping, Housing, Health, Entertainment, Education, Travel, Personal Care, Finance, Other>\"\n  }\n]\n\nRules:\n- Supports multiple expenses (separated by newlines, commas, and, etc.) or single expense.\n- Handle k/K (2k = 2000, 1.5k = 1500).\n- Handle relative dates: yesterday, last monday, etc. Default to today.\n- Expand short names: swiggy/zomato -> Food Delivery, uber/ola -> Cab Ride, blinkit/zepto -> Grocery.\n- If no valid expense found, return [].\n- Return ONLY the raw JSON array. No explanations, no markdown fences."
+        }
+      },
+      "id": "b9c55436-98dc-4241-b55e-69845b6056db",
+      "name": "Extract Expense Data",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -528,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "check-is-valid",
+              "leftValue": "={{ $json.isValid }}",
+              "operator": {
+                "operation": "true",
+                "singleValue": true,
+                "type": "boolean"
+              },
+              "rightValue": ""
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          }
+        },
+        "options": {}
+      },
+      "id": "b8df182f-cc7b-4052-9eef-8c7c9d42f792",
+      "name": "Is Valid Expense?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.output || $input.first().json.text || '';\nconst clean = String(raw).replace(/```json/gi, '').replace(/```/g, '').trim();\n\nlet expenses = [];\ntry {\n  const parsed = JSON.parse(clean);\n  if (Array.isArray(parsed)) {\n    expenses = parsed;\n  } else if (parsed && Array.isArray(parsed.expenses)) {\n    expenses = parsed.expenses;\n  } else if (parsed && typeof parsed === 'object') {\n    expenses = [parsed];\n  }\n} catch (e) {\n  expenses = [];\n}\n\nconst validExpenses = expenses.filter(e => typeof e.amount === 'number' && e.amount > 0);\n\nif (validExpenses.length === 0) {\n  return [{\n    json: {\n      isValid: false,\n      chatId: $('Telegram Trigger').first().json.message.chat.id\n    }\n  }];\n}\n\nconst monthNames = [\n  'January', 'February', 'March', 'April', 'May', 'June',\n  'July', 'August', 'September', 'October', 'November', 'December'\n];\n\nconst primaryDate = new Date(validExpenses[0].date || new Date());\nconst sheetName = `${monthNames[primaryDate.getMonth()]} ${primaryDate.getFullYear()}`;\nconst chatId = $('Telegram Trigger').first().json.message.chat.id;\n\nreturn [{\n  json: {\n    isValid: true,\n    sheetName: sheetName,\n    chatId: chatId,\n    expenses: validExpenses.map(e => {\n      const d = new Date(e.date || new Date());\n      const sName = `${monthNames[d.getMonth()]} ${d.getFullYear()}`;\n      return {\n        date: e.date || new Date().toISOString().slice(0, 10),\n        amount: e.amount,\n        description: e.description || 'Expense',\n        category: e.category || 'Other',\n        sheetName: sName\n      };\n    })\n  }\n}];"
+      },
+      "id": "4231e9e6-1aca-4ac3-beb6-48eb392253e2",
+      "name": "Prepare Sheet Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "title": "={{ $('Prepare Sheet Data').item.json.sheetName }}",
+        "options": {}
+      },
+      "id": "f374b9fe-f6bb-4aa7-827a-6bb2a50efd93",
+      "name": "Create Monthly Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        400,
+        -200
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/YOUR_GOOGLE_SHEET_ID/values/\" + encodeURIComponent($('Prepare Sheet Data').item.json.sheetName) + \"!A1:D1?valueInputOption=USER_ENTERED\" }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"values\": [\n    [\"Date\", \"Amount\", \"Description\", \"Category\"]\n  ]\n}",
+        "options": {}
+      },
+      "id": "fdefa1ee-5326-4aeb-b3de-671ded703516",
+      "name": "Write Column Headers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        600,
+        -200
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "canBeUsedToMatch": true,
+              "defaultMatch": false,
+              "display": true,
+              "displayName": "Date",
+              "id": "Date",
+              "removed": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": true,
+              "defaultMatch": false,
+              "display": true,
+              "displayName": "Amount",
+              "id": "Amount",
+              "removed": false,
+              "type": "number"
+            },
+            {
+              "canBeUsedToMatch": true,
+              "defaultMatch": false,
+              "display": true,
+              "displayName": "Description",
+              "id": "Description",
+              "removed": false,
+              "type": "string"
+            },
+            {
+              "canBeUsedToMatch": true,
+              "defaultMatch": false,
+              "display": true,
+              "displayName": "Category",
+              "id": "Category",
+              "removed": false,
+              "type": "string"
+            }
+          ],
+          "value": {
+            "Amount": "={{ $json.Amount }}",
+            "Category": "={{ $json.Category }}",
+            "Date": "={{ $json.Date }}",
+            "Description": "={{ $json.Description }}"
+          }
+        },
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "operation": "append",
+        "options": {},
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.sheetName }}"
+        }
+      },
+      "id": "fb25e84c-7813-42d1-ae03-be40ceaa4501",
+      "name": "Append Expense Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        800,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        },
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}"
+      },
+      "id": "e6e13bd5-59ea-49b0-8132-f49f8986a7f7",
+      "name": "Send Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "❌ I couldn't detect an expense amount in your message.\n\nJust tell me what you spent — any format works:\n\n• *coffee 80*\n• *swiggy 340 yesterday*\n• *250 taxi , 499 flour*\n• *taxi 224\\n422 games\\n124 medicine*",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "cfb344b7-8e7b-4ae0-bbd0-9c9509f3136b",
+      "name": "Send Error Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        352
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        -640,
+        384
+      ],
+      "id": "0310503b-eadc-48b3-9ec7-0fc3001938cc",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YOUR_GEMINI_CREDENTIAL_ID",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "id": "74030c58-2e97-4c41-8c39-0e673c627931",
+      "name": "If Sheet Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "check-sheet-in-list",
+              "leftValue": "={{ $json.sheets.map(s => s.properties.title).includes($('Prepare Sheet Data').first().json.sheetName) }}",
+              "operator": {
+                "operation": "true",
+                "singleValue": true,
+                "type": "boolean"
+              },
+              "rightValue": ""
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          }
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "377894e4-8090-4a97-8035-3f88193c9a8a",
+      "name": "Check Sheet Exists",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        200,
+        0
+      ],
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "method": "GET",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {},
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/YOUR_GOOGLE_SHEET_ID?fields=sheets.properties.title"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "id": "bb98d61c-05da-4188-b608-246721159ee2",
+      "name": "Prepare Rows for Sheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const sheetData = $('Prepare Sheet Data').first().json;\nconst expenses = sheetData.expenses || [];\n\nreturn expenses.map(exp => ({\n  json: {\n    Date: exp.date,\n    Amount: exp.amount,\n    Description: exp.description,\n    Category: exp.category,\n    sheetName: exp.sheetName || sheetData.sheetName\n  }\n}));"
+      }
+    },
+    {
+      "id": "74434884-871c-40a3-a6c8-05788e56cf35",
+      "name": "Format Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst chatId = $('Prepare Sheet Data').first().json.chatId;\nconst sheetName = $('Prepare Sheet Data').first().json.sheetName;\n\nif (items.length === 1) {\n  const exp = items[0].json;\n  const text = `✅ *Expense Logged!*\n\n📅 Date: \\`${exp.Date}\\`\n💰 Amount: ₹${exp.Amount}\n📝 Description: ${exp.Description}\n🏷️ Category: ${exp.Category}\n📊 Sheet: _${sheetName}_`;\n\n  return [{ json: { text, chatId } }];\n}\n\nlet total = 0;\nconst list = items.map((item, idx) => {\n  const exp = item.json;\n  total += Number(exp.Amount) || 0;\n  return `${idx + 1}. *${exp.Description}* — ₹${exp.Amount} _(${exp.Category})_`;\n}).join('\\n');\n\nconst text = `✅ *${items.length} Expenses Logged!*\n\n${list}\n\n💰 *Total:* ₹${total}\n📊 *Sheet:* _${sheetName}_`;\n\nreturn [{ json: { text, chatId } }];"
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Expense Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Extract Expense Data",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Expense Data": {
+      "main": [
+        [
+          {
+            "node": "Prepare Sheet Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sheet Data": {
+      "main": [
+        [
+          {
+            "node": "Is Valid Expense?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid Expense?": {
+      "main": [
+        [
+          {
+            "node": "Check Sheet Exists",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Error Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Sheet Exists": {
+      "main": [
+        [
+          {
+            "node": "If Sheet Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Sheet Exists": {
+      "main": [
+        [
+          {
+            "node": "Prepare Rows for Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Monthly Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Monthly Sheet": {
+      "main": [
+        [
+          {
+            "node": "Write Column Headers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Column Headers": {
+      "main": [
+        [
+          {
+            "node": "Prepare Rows for Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Rows for Sheet": {
+      "main": [
+        [
+          {
+            "node": "Append Expense Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Expense Row": {
+      "main": [
+        [
+          {
+            "node": "Format Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}
